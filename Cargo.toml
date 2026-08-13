@@ -1,0 +1,40 @@
+[package]
+name = "udu"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Plays mechanical-keyboard switch sounds on Linux by reading keystrokes from evdev, controlled live via a TUI."
+repository = "https://github.com/smaniotov/udu"
+homepage = "https://github.com/smaniotov/udu"
+readme = "README.md"
+keywords = ["keyboard-sounds", "mechanical-keyboard", "tui", "evdev", "linux"]
+categories = ["command-line-utilities", "multimedia::audio", "os::linux-apis"]
+authors = ["Vinícius Smanioto <smaniotov@gmail.com>"]
+rust-version = "1.88"
+exclude = [".github/", "docs/plans/", "scripts/", "proto-*.png"]
+
+[[bin]]
+name = "udu"
+path = "src/main.rs"
+
+[lib]
+name = "udu"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+cpal = { version = "0.18.1", features = ["realtime-dbus"] }
+dirs = "6"
+evdev = "0.13.2"
+fastrand = "2.5.0"
+libc = "0.2"
+ratatui = "0.30.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+symphonia = { version = "0.6.0", default-features = false, features = ["pcm", "wav", "mp3"] }
+thiserror = "2.0.20"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"

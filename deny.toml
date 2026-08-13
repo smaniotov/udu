@@ -1,0 +1,76 @@
+# cargo-deny policy for udu.
+#
+# udu is a Linux-only binary (evdev, systemd --user, cpal's realtime-dbus
+# feature all require Linux). Restricting the graph to Linux targets prunes
+# platform-specific dependencies (macOS CoreAudio bindings, Windows terminal
+# backends, WASI shims) that Cargo.lock retains for cross-platform
+# reproducibility but that never compile into the shipped artifact — so the
+# license/ban findings below reflect what actually ships, not the union of
+# every platform Cargo could theoretically target.
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+
+[advisories]
+# Any RustSec advisory (vulnerability, unsoundness, yanked crate) found
+# against the resolved graph fails the check by default in this cargo-deny
+# version. Nothing is pre-ignored; a real advisory must be triaged here with
+# a documented reason before it can be waived.
+ignore = []
+
+# udu's central security claim is that it never transmits keystrokes over a
+# network. [bans] turns that promise into a CI-enforced invariant: any crate
+# whose entire purpose is acting as an HTTP/websocket/network client is
+# denied outright, so a future dependency change can't silently open a
+# network path. As of this policy, none of these are in udu's dependency
+# tree (verified via `cargo tree -e normal,build,dev`).
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+deny = [
+    { crate = "reqwest", reason = "udu must never make HTTP requests: keystrokes stay local" },
+    { crate = "hyper", reason = "HTTP client/server — network capability is out of scope for udu" },
+    { crate = "hyper-util", reason = "HTTP client/server — network capability is out of scope for udu" },
+    { crate = "hyper-rustls", reason = "HTTP client/server — network capability is out of scope for udu" },
+    { crate = "hyper-tls", reason = "HTTP client/server — network capability is out of scope for udu" },
+    { crate = "ureq", reason = "HTTP client — network capability is out of scope for udu" },
+    { crate = "curl", reason = "HTTP client — network capability is out of scope for udu" },
+    { crate = "curl-sys", reason = "HTTP client — network capability is out of scope for udu" },
+    { crate = "isahc", reason = "HTTP client — network capability is out of scope for udu" },
+    { crate = "surf", reason = "HTTP client — network capability is out of scope for udu" },
+    { crate = "actix-web", reason = "HTTP server framework — network capability is out of scope for udu" },
+    { crate = "warp", reason = "HTTP server framework — network capability is out of scope for udu" },
+    { crate = "tonic", reason = "gRPC client/server — network capability is out of scope for udu" },
+    { crate = "tungstenite", reason = "WebSocket client/server — network capability is out of scope for udu" },
+    { crate = "tokio-tungstenite", reason = "WebSocket client/server — network capability is out of scope for udu" },
+    { crate = "async-tungstenite", reason = "WebSocket client/server — network capability is out of scope for udu" },
+]
+
+# This section is considered when running `cargo deny check licenses`.
+[licenses]
+# Every license below is one that a crate actually reachable from `udu` on
+# a Linux build (normal + build + dev dependencies) carries today, derived
+# from `cargo tree -e normal,build,dev` cross-referenced against
+# `cargo metadata`'s per-package `license` field — not copied from a
+# template. All are permissive and safe to bundle into a distributed binary.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSL-1.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

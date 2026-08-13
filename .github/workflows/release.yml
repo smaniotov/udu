@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  # Never cancel a release mid-flight — a half-published release is worse
+  # than a slightly delayed one.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-gnu
+  # Same rationale as ci.yml: cpal's "realtime-dbus" feature links against
+  # both ALSA and D-Bus.
+  APT_PACKAGES: libasound2-dev libdbus-1-dev pkg-config
+
+jobs:
+  release:
+    name: Build, sign, and publish release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the GitHub Release and upload assets
+      id-token: write       # required to mint the provenance attestation
+      attestations: write   # required to publish the attestation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ env.APT_PACKAGES }}
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+          targets: ${{ env.TARGET }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Verify license notices are present
+        # THIRD-PARTY-LICENSES.md documents the licenses of everything
+        # statically linked into the binary — shipping without it is a
+        # license-compliance failure, not a cosmetic one, so fail loudly
+        # instead of silently packaging an incomplete archive.
+        run: |
+          set -euo pipefail
+          for f in README.md LICENSE THIRD-PARTY-LICENSES.md; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Required file '$f' is missing from the repository root. Refusing to package a release archive without it." >&2
+              exit 1
+            fi
+          done
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ env.TARGET }}
+
+      - name: Package release archive
+        id: package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          stage="udu-${version}-${{ env.TARGET }}"
+          mkdir -p "dist/${stage}"
+          cp "target/${{ env.TARGET }}/release/udu" "dist/${stage}/"
+          cp README.md LICENSE THIRD-PARTY-LICENSES.md "dist/${stage}/"
+          tar -czf "dist/${stage}.tar.gz" -C dist "${stage}"
+          ( cd dist && sha256sum "${stage}.tar.gz" > SHA256SUMS )
+          echo "archive=dist/${stage}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "sums=dist/SHA256SUMS" >> "$GITHUB_OUTPUT"
+          echo "binary=dist/${stage}/udu" >> "$GITHUB_OUTPUT"
+
+      - name: Generate build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.binary }}
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            "${{ steps.package.outputs.archive }}" \
+            "${{ steps.package.outputs.sums }}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

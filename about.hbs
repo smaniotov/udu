@@ -1,0 +1,29 @@
+# Third-Party Licenses
+
+`udu` is distributed as a statically-linked binary. This file reproduces the
+license notice of every third-party crate compiled into it, as required by
+their respective licenses. Generated with `cargo about generate`; do not edit
+by hand — regenerate instead (`cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`).
+
+## License summary
+
+{{#each overview}}
+- [{{name}}](#{{id}}) — {{count}} crate(s)
+{{/each}}
+
+{{#each licenses}}
+---
+
+## {{name}}
+
+Used by:
+
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}

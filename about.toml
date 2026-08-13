@@ -1,0 +1,28 @@
+# cargo-about config for generating THIRD-PARTY-LICENSES.md.
+#
+# udu ships a statically-linked Linux binary, so the notices below must cover
+# every dependency actually compiled into it. `targets` mirrors deny.toml:
+# udu only ever builds for Linux (evdev, systemd --user), so platform-gated
+# dependencies for other OSes are pruned instead of padding the notice file
+# with licenses that never ship.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+
+# Dev-dependencies (assert_cmd, predicates, ...) only run `cargo test`; they
+# never compile into the shipped binary, so their notices don't belong here.
+ignore-dev-dependencies = true
+
+# Mirrors the allow-list in deny.toml — every permissive license actually
+# carried by a crate in udu's resolved Linux dependency graph.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSL-1.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]

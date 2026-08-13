@@ -1,0 +1,54 @@
+name: Feature request
+description: Propose a feature or behavior change for udu.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `udu` is a solo-maintained project with a deliberately curated scope
+        (see the Roadmap section of the README). Opening this issue starts a
+        conversation about the idea — it does not commit anyone to building
+        it, and it's a required first step before any related PR.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: >
+        Describe the problem or limitation you're running into. Focus on the
+        problem, not the solution yet — that's the next field.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you'd like udu to do instead, as concretely as you can.
+    validations:
+      required: true
+  - type: dropdown
+    id: discussed
+    attributes:
+      label: Has this been discussed anywhere already?
+      description: >
+        Link any related issue, discussion, or PR in the field below if so.
+      options:
+        - "No, this is the first time I'm raising it"
+        - "Yes, see the link below"
+    validations:
+      required: true
+  - type: input
+    id: discussion-link
+    attributes:
+      label: Link to prior discussion (if any)
+      placeholder: e.g. #12
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you thought about, and why they don't fit as well.
+    validations:
+      required: false

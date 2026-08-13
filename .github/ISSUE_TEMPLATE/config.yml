@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/smaniotov/udu/security/advisories/new
+    about: >-
+      udu reads raw keyboard input. Please do NOT file a public issue for a
+      security vulnerability — use GitHub's private vulnerability reporting
+      (linked above) so it can be fixed before it's public. See SECURITY.md
+      for details.

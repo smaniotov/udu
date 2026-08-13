@@ -1,0 +1,12 @@
+/target/
+
+sounds/
+
+/udu-*.png
+/proto-*.png
+
+.claude/
+keating.config.json
+
+*.tmp
+*.tmp.*
