@@ -11,6 +11,13 @@ stable, and anything may change at any time without a major version bump.
 
 ## [Unreleased]
 
+### Changed
+
+- Searching for a soundpack now requires pressing `/` to enter search mode. While a
+  search is active, keys that used to be shortcuts (`s`, `p`, `r`, `q`, `x`, `1/2/3`,
+  `?`, `U`, `+/-`) are inserted into the query instead of firing their actions; `Esc`
+  clears the search and restores the shortcuts. The header hints advertise `/ search`.
+
 ## [0.1.0] - 2026-08-13
 
 Initial public release.

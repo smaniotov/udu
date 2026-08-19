@@ -244,6 +244,7 @@ pub struct App {
     pub settings_tab: SettingsTab,
     pub settings_index: usize,
     pub search_query: String,
+    pub searching: bool,
     pub status: String,
     pub should_quit: bool,
     service: UduService,
@@ -267,6 +268,7 @@ impl App {
             settings_tab: SettingsTab::General,
             settings_index: 0,
             search_query: String::new(),
+            searching: false,
             status: String::from("Loading soundpacks and devices..."),
             should_quit: false,
             service: UduService,
@@ -328,7 +330,16 @@ impl App {
             .collect()
     }
 
+    pub fn start_search(&mut self) {
+        self.search_query.clear();
+        self.searching = true;
+        if !self.packs.is_empty() {
+            self.list_state.select(Some(0));
+        }
+    }
+
     pub fn type_search(&mut self, c: char) {
+        self.searching = true;
         self.search_query.push(c);
         let matches = self.filtered_pack_indices();
         if matches.is_empty() {
@@ -341,12 +352,12 @@ impl App {
     pub fn backspace_search(&mut self) {
         self.search_query.pop();
         let matches = self.filtered_pack_indices();
-        self.list_state
-            .select(matches.first().map(|_| 0).or(Some(0)));
+        self.list_state.select(matches.first().map(|_| 0));
     }
 
     pub fn clear_search(&mut self) {
         self.search_query.clear();
+        self.searching = false;
         if !self.packs.is_empty() {
             self.list_state.select(Some(0));
         }

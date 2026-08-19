@@ -204,18 +204,20 @@ fn draw_launcher(frame: &mut Frame, app: &mut App) {
     draw_footer(frame, app, footer_area);
 }
 
-const WIDE_HEADER_HINTS: [(&str, &str); 6] = [
+const WIDE_HEADER_HINTS: [(&str, &str); 7] = [
     ("[↑↓]", " browse  "),
     ("[Enter]", " select  "),
+    ("[/]", " search  "),
     ("[Tab]", " settings  "),
     ("[+/-]", " volume  "),
     ("[?]", " about  "),
     ("[q]", " quit"),
 ];
 
-const NARROW_HEADER_HINTS: [(&str, &str); 6] = [
+const NARROW_HEADER_HINTS: [(&str, &str); 7] = [
     ("[↑↓]", "  "),
     ("[Enter]", "  "),
+    ("[/]", " search  "),
     ("[Tab]", " settings  "),
     ("[+/-]", " vol  "),
     ("[?]", " about  "),
@@ -223,7 +225,7 @@ const NARROW_HEADER_HINTS: [(&str, &str); 6] = [
 ];
 
 const WIDE_UNINSTALL_HINT: (&str, &str) = ("[U]", " remove service  ");
-const NARROW_UNINSTALL_HINT: (&str, &str) = ("[U]", " service  ");
+const NARROW_UNINSTALL_HINT: (&str, &str) = ("[U]", "  ");
 
 fn header_hints(installed: bool, width: u16) -> Vec<(&'static str, &'static str)> {
     let wide = hints_with_uninstall(&WIDE_HEADER_HINTS, WIDE_UNINSTALL_HINT, installed);
@@ -236,11 +238,11 @@ fn header_hints(installed: bool, width: u16) -> Vec<(&'static str, &'static str)
 }
 
 fn hints_with_uninstall(
-    base: &[(&'static str, &'static str); 6],
+    base: &[(&'static str, &'static str); 7],
     uninstall: (&'static str, &'static str),
     installed: bool,
 ) -> Vec<(&'static str, &'static str)> {
-    let (navigation, closing) = base.split_at(4);
+    let (navigation, closing) = base.split_at(5);
 
     if !installed {
         return base.to_vec();
@@ -313,16 +315,10 @@ fn draw_search(frame: &mut Frame, app: &mut App, area: Rect) {
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let search_area = Rect::new(x, area.y, width, area.height);
 
-    let prompt = format!("/ {}", app.search_query);
-    let color = if app.search_query.is_empty() {
-        DIM
+    let (prompt, color, border) = if app.searching {
+        (format!("/ {}▏", app.search_query), WHITE, YELLOW)
     } else {
-        WHITE
-    };
-    let border = if app.search_query.is_empty() {
-        DIM
-    } else {
-        YELLOW
+        (String::from("/  press [/] to search"), DIM, DIM)
     };
     let paragraph = Paragraph::new(Line::from(Span::styled(prompt, Style::default().fg(color))))
         .block(
@@ -786,15 +782,18 @@ fn handle_uninstall_confirm_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 fn handle_launcher_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if app.searching {
+        return handle_search_key(app, key);
+    }
+
     match key.code {
         KeyCode::Up => app.select_previous(),
         KeyCode::Down => app.select_next(),
         KeyCode::Enter => app.activate_selected()?,
         KeyCode::Tab => app.open_settings(),
-        KeyCode::Backspace => app.backspace_search(),
-        KeyCode::Esc => app.clear_search(),
-        KeyCode::Char('q') => app.quit(),
+        KeyCode::Char('/') => app.start_search(),
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => app.quit(),
+        KeyCode::Char('q') => app.quit(),
         KeyCode::Char('s') => app.open_settings(),
         KeyCode::Char('?') => {
             app.open_settings();
@@ -809,7 +808,25 @@ fn handle_launcher_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('p') => app.preview_selected()?,
         KeyCode::Char('r') => app.refresh()?,
         KeyCode::Char('U') => app.request_uninstall_confirmation(),
-        KeyCode::Char(c) if c.is_ascii_graphic() && c != ' ' => app.type_search(c),
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn handle_search_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Char('c') | KeyCode::Char('q')
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            app.quit();
+        }
+        KeyCode::Up => app.select_previous(),
+        KeyCode::Down => app.select_next(),
+        KeyCode::Enter => app.activate_selected()?,
+        KeyCode::Backspace => app.backspace_search(),
+        KeyCode::Esc => app.clear_search(),
+        KeyCode::Char(c) if c.is_ascii_graphic() => app.type_search(c),
         KeyCode::Char(' ') => app.type_search(' '),
         _ => {}
     }
@@ -868,6 +885,30 @@ mod tests {
         (app, root)
     }
 
+    fn press(app: &mut App, c: char) {
+        handle_event(
+            app,
+            Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)),
+        )
+        .expect("handle key");
+    }
+
+    fn press_esc(app: &mut App) {
+        handle_event(
+            app,
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        )
+        .expect("handle key");
+    }
+
+    fn press_backspace(app: &mut App) {
+        handle_event(
+            app,
+            Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+        )
+        .expect("handle key");
+    }
+
     fn sample_packs() -> Vec<crate::soundpack::Soundpack> {
         vec![
             crate::soundpack::Soundpack {
@@ -916,6 +957,19 @@ mod tests {
     }
 
     #[test]
+    fn header_offers_the_search_hint_at_the_minimum_terminal_width() {
+        const MINIMUM_INNER_WIDTH: u16 = 78;
+
+        for installed in [true, false] {
+            let hints = header_hints(installed, MINIMUM_INNER_WIDTH);
+            assert!(
+                hints.iter().any(|(key, _)| *key == "[/]"),
+                "header must offer the search key when installed={installed}"
+            );
+        }
+    }
+
+    #[test]
     fn renders_the_launcher_with_banner_search_and_volume() {
         let (mut app, root) = test_app("launcher");
         app.packs = sample_packs();
@@ -940,16 +994,9 @@ mod tests {
         let (mut app, root) = test_app("filter");
         app.packs = sample_packs();
 
-        handle_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE)),
-        )
-        .expect("type search");
-        handle_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),
-        )
-        .expect("type search");
+        press(&mut app, '/');
+        press(&mut app, 'm');
+        press(&mut app, 'e');
 
         assert_eq!(app.search_query, "me");
         assert_eq!(app.visible_packs().len(), 1);
@@ -957,6 +1004,113 @@ mod tests {
             app.selected_pack().map(|p| p.name.as_str()),
             Some("membrane-60")
         );
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn slash_enters_search_mode_and_esc_leaves_it() {
+        let (mut app, root) = test_app("search-mode");
+        app.packs = sample_packs();
+
+        assert!(!app.searching);
+        press(&mut app, '/');
+        assert!(app.searching, "/ should enter search mode");
+        assert!(app.search_query.is_empty());
+
+        press(&mut app, 's');
+        assert_eq!(app.search_query, "s");
+        assert_eq!(app.screen, Screen::Launcher);
+        assert!(app.searching);
+
+        press_esc(&mut app);
+        assert!(!app.searching, "Esc should leave search mode");
+        assert!(app.search_query.is_empty());
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn search_mode_suppresses_single_letter_shortcuts() {
+        let (mut app, root) = test_app("search-shortcuts");
+        app.packs = sample_packs();
+
+        press(&mut app, '/');
+        for key in ['s', 'p', 'r', 'q', 'x', '1', 'U', '+', '-'] {
+            press(&mut app, key);
+        }
+
+        assert_eq!(app.search_query, "sprqx1U+-");
+        assert_eq!(app.screen, Screen::Launcher);
+        assert!(!app.should_quit);
+        assert!(app.searching);
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn ctrl_c_and_ctrl_q_quit_from_search_mode() {
+        for chord in [('c', true), ('q', true)] {
+            let (mut app, root) = test_app(&format!("search-ctrl-{}", chord.0));
+            app.packs = sample_packs();
+
+            press(&mut app, '/');
+            press(&mut app, 's');
+            handle_event(
+                &mut app,
+                Event::Key(KeyEvent::new(
+                    KeyCode::Char(chord.0),
+                    if chord.1 {
+                        KeyModifiers::CONTROL
+                    } else {
+                        KeyModifiers::NONE
+                    },
+                )),
+            )
+            .expect("quit from search mode");
+
+            assert!(
+                app.should_quit,
+                "Ctrl+{} should quit from search mode",
+                chord.0
+            );
+            fs::remove_dir_all(root).expect("remove test directory");
+        }
+    }
+
+    #[test]
+    fn backspace_deselects_when_no_results_match() {
+        let (mut app, root) = test_app("backspace-empty");
+        app.packs = sample_packs();
+
+        press(&mut app, '/');
+        press(&mut app, 'z');
+        press(&mut app, 'z');
+        assert_eq!(
+            app.list_state.selected(),
+            None,
+            "a query with no matches deselects"
+        );
+
+        press_backspace(&mut app);
+        assert_eq!(app.search_query, "z");
+        assert_eq!(
+            app.list_state.selected(),
+            None,
+            "backspacing to a still-empty result set keeps the list deselected"
+        );
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn shortcut_keys_work_outside_search_mode() {
+        let (mut app, root) = test_app("shortcuts");
+        app.packs = sample_packs();
+
+        press(&mut app, 's');
+        assert_eq!(app.screen, Screen::Settings, "s should open settings");
+
+        app.close_settings();
+        press(&mut app, 'q');
+        assert!(app.should_quit, "q should quit outside search mode");
+        assert!(!app.searching);
         fs::remove_dir_all(root).expect("remove test directory");
     }
 
