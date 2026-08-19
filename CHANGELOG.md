@@ -9,7 +9,7 @@ This project is currently `0.y.z`. Per SemVer 2.0.0 clause 4, the public
 interface (CLI flags, control-socket protocol, config file format) is not yet
 stable, and anything may change at any time without a major version bump.
 
-## [Unreleased]
+## [0.1.1] - 2026-08-19
 
 ### Changed
 

@@ -1,6 +1,6 @@
 [package]
 name = "udu"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Plays mechanical-keyboard switch sounds on Linux by reading keystrokes from evdev, controlled live via a TUI."
