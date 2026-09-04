@@ -217,28 +217,41 @@ const WIDE_HEADER_HINTS: [(&str, &str); 7] = [
 const NARROW_HEADER_HINTS: [(&str, &str); 7] = [
     ("[↑↓]", "  "),
     ("[Enter]", "  "),
-    ("[/]", " search  "),
+    ("[/]", " search "),
     ("[Tab]", " settings  "),
     ("[+/-]", " vol  "),
     ("[?]", " about  "),
     ("[q]", " quit"),
 ];
 
+const WIDE_RESTART_HINT: (&str, &str) = ("[R]", " restart service  ");
+const NARROW_RESTART_HINT: (&str, &str) = ("[R]", "");
 const WIDE_UNINSTALL_HINT: (&str, &str) = ("[U]", " remove service  ");
-const NARROW_UNINSTALL_HINT: (&str, &str) = ("[U]", "  ");
+const NARROW_UNINSTALL_HINT: (&str, &str) = ("[U]", "");
 
 fn header_hints(installed: bool, width: u16) -> Vec<(&'static str, &'static str)> {
-    let wide = hints_with_uninstall(&WIDE_HEADER_HINTS, WIDE_UNINSTALL_HINT, installed);
+    let wide = hints_with_service_controls(
+        &WIDE_HEADER_HINTS,
+        WIDE_RESTART_HINT,
+        WIDE_UNINSTALL_HINT,
+        installed,
+    );
 
     if hints_width(&wide) <= width {
         return wide;
     }
 
-    hints_with_uninstall(&NARROW_HEADER_HINTS, NARROW_UNINSTALL_HINT, installed)
+    hints_with_service_controls(
+        &NARROW_HEADER_HINTS,
+        NARROW_RESTART_HINT,
+        NARROW_UNINSTALL_HINT,
+        installed,
+    )
 }
 
-fn hints_with_uninstall(
+fn hints_with_service_controls(
     base: &[(&'static str, &'static str); 7],
+    restart: (&'static str, &'static str),
     uninstall: (&'static str, &'static str),
     installed: bool,
 ) -> Vec<(&'static str, &'static str)> {
@@ -251,6 +264,7 @@ fn hints_with_uninstall(
     navigation
         .iter()
         .copied()
+        .chain(std::iter::once(restart))
         .chain(std::iter::once(uninstall))
         .chain(closing.iter().copied())
         .collect()
@@ -807,6 +821,7 @@ fn handle_launcher_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('3') => app.apply_preset(crate::config::VOLUME_LOUD)?,
         KeyCode::Char('p') => app.preview_selected()?,
         KeyCode::Char('r') => app.refresh()?,
+        KeyCode::Char('R') => app.restart_service()?,
         KeyCode::Char('U') => app.request_uninstall_confirmation(),
         _ => {}
     }
@@ -941,19 +956,21 @@ mod tests {
     }
 
     #[test]
-    fn header_offers_the_uninstall_key_only_while_the_service_is_installed() {
+    fn header_offers_service_controls_only_while_the_service_is_installed() {
         let wide = u16::MAX;
 
-        assert!(
-            header_hints(true, wide)
-                .iter()
-                .any(|(key, _)| *key == "[U]")
-        );
-        assert!(
-            !header_hints(false, wide)
-                .iter()
-                .any(|(key, _)| *key == "[U]")
-        );
+        for key in ["[R]", "[U]"] {
+            assert!(
+                header_hints(true, wide)
+                    .iter()
+                    .any(|(hint, _)| *hint == key)
+            );
+            assert!(
+                !header_hints(false, wide)
+                    .iter()
+                    .any(|(hint, _)| *hint == key)
+            );
+        }
     }
 
     #[test]

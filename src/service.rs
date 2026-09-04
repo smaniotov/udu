@@ -76,6 +76,10 @@ impl UduService {
         uninstall_unit_at(&unit_path)
     }
 
+    pub fn restart_service(&self) -> Result<(), ServiceError> {
+        self.systemctl("restart")
+    }
+
     pub fn is_installed(&self) -> bool {
         self.unit_path().map(|path| path.exists()).unwrap_or(false)
     }
@@ -398,8 +402,8 @@ mod tests {
     use super::{
         LEGACY_SERVICE_NAMES, LegacyUnitOutcome, SERVICE_NAME, ServiceError,
         is_deleted_executable_path, is_lock_contended, migrate_one_legacy_unit, normalized_config,
-        quote_unit_path, render_service_unit, resolve_executable, uninstall_unit_at,
-        unit_targets_udu,
+        quote_unit_path, render_service_unit, resolve_executable, systemctl_args,
+        uninstall_unit_at, unit_targets_udu,
     };
     use crate::config::AppConfig;
     use std::fs;
@@ -450,6 +454,14 @@ mod tests {
     fn uses_udu_as_the_fixed_service_name() {
         assert_eq!(SERVICE_NAME, "udu.service");
         assert_eq!(LEGACY_SERVICE_NAMES, ["wayvibes-tui.service"]);
+    }
+
+    #[test]
+    fn restart_targets_the_udu_user_service() {
+        assert_eq!(
+            systemctl_args("restart"),
+            vec!["--user", "restart", "udu.service"]
+        );
     }
 
     #[test]

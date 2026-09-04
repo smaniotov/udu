@@ -733,6 +733,31 @@ impl App {
         self.service.is_installed()
     }
 
+    pub fn restart_service(&mut self) -> Result<()> {
+        if !self.service.is_installed() {
+            self.status = String::from("The udu service is not installed.");
+            return Ok(());
+        }
+
+        self.backend = None;
+
+        if let Err(error) = self.service.restart_service() {
+            self.status = format!("Could not restart the udu service: {error}");
+            return Ok(());
+        }
+
+        match self.connect_backend() {
+            Ok(status) => {
+                self.status = format!("Service restarted · {}", live_status_line(&status));
+            }
+            Err(error) => {
+                self.status = format!("Could not reconnect to the udu service: {error}");
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn grant_service_consent(&mut self) -> Result<()> {
         self.service_modal = None;
 
@@ -783,7 +808,14 @@ impl App {
         let migrations = self
             .service
             .start_service(&self.config_path, &self.config)?;
+        let status = self.connect_backend()?;
 
+        self.status = install_status_line(&status, &migrations);
+
+        Ok(())
+    }
+
+    fn connect_backend(&mut self) -> Result<BackendStatus> {
         let mut client = match ControlClient::connect() {
             Ok(client) => client,
             Err(_) => {
@@ -796,10 +828,9 @@ impl App {
         self.config.volume = status.volume;
         self.sound_enabled = status.enabled;
         self.sync_audio_status(&status);
-        self.status = install_status_line(&status, &migrations);
         self.backend = Some(Box::new(client));
 
-        Ok(())
+        Ok(status)
     }
 
     pub fn quit(&mut self) {
