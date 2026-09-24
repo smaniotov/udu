@@ -1,4 +1,5 @@
 use crate::app::{App, Screen, ServiceModal, SettingsTab};
+use crate::config::{MAX_TONE_GAIN_DB, MIN_TONE_GAIN_DB};
 use anyhow::Result;
 use ratatui::Frame;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -525,17 +526,127 @@ fn draw_settings_body(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_general_settings(frame: &mut Frame, app: &App, area: Rect) {
-    draw_setting_rows(frame, app, &crate::app::GENERAL_SETTINGS, area);
+    draw_setting_rows(frame, app, &crate::app::GENERAL_SETTINGS, area, None);
 }
 
 fn draw_audio_settings(frame: &mut Frame, app: &App, area: Rect) {
-    draw_setting_rows(frame, app, &crate::app::AUDIO_SETTINGS, area);
+    if area.width >= 72 {
+        let [pad_area, rows_area] =
+            Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)])
+                .areas(area);
+        draw_tone_pad(frame, app, pad_area);
+        draw_setting_rows(
+            frame,
+            app,
+            &crate::app::AUDIO_SETTINGS,
+            rows_area,
+            Some(crate::app::TONE_PAD_SETTING_INDEX),
+        );
+    } else {
+        let [pad_area, rows_area] =
+            Layout::vertical([Constraint::Length(9), Constraint::Fill(1)]).areas(area);
+        draw_tone_pad(frame, app, pad_area);
+        draw_setting_rows(
+            frame,
+            app,
+            &crate::app::AUDIO_SETTINGS,
+            rows_area,
+            Some(crate::app::TONE_PAD_SETTING_INDEX),
+        );
+    }
 }
 
-fn draw_setting_rows(frame: &mut Frame, app: &App, rows: &[crate::app::SettingRow], area: Rect) {
+fn draw_tone_pad(frame: &mut Frame, app: &App, area: Rect) {
+    let title = format!(
+        " tone pad · bass {:+.1} dB · treble {:+.1} dB ",
+        app.config.tone_bass_gain, app.config.tone_treble_gain
+    );
+    let border_style = if app.settings_index == crate::app::TONE_PAD_SETTING_INDEX {
+        Style::default().fg(YELLOW)
+    } else {
+        Style::default().fg(GRAY)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(Line::from(Span::styled(
+            title,
+            if app.tone_pad_editing {
+                Style::default().fg(YELLOW).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(WHITE)
+            },
+        )));
+    frame.render_widget(block, area);
+
+    let inner = area.inner(Margin::new(1, 1));
+    let grid_width = inner.width.saturating_sub(17).max(5).min(24) as usize;
+    let grid_height = inner.height.max(1) as usize;
+    let selected_x = tone_pad_x(app.config.tone_treble_gain, grid_width);
+    let selected_y = tone_pad_y(app.config.tone_bass_gain, grid_height);
+    let middle = grid_height / 2;
+    let lines = (0..grid_height)
+        .map(|row| {
+            let vertical_label = if row == 0 {
+                "full "
+            } else if row + 1 == grid_height {
+                "light"
+            } else {
+                "     "
+            };
+            let horizontal_start = if row == middle { "warm " } else { "     " };
+            let horizontal_end = if row == middle { " bright" } else { "" };
+            let grid = (0..grid_width)
+                .map(|column| {
+                    if row == selected_y && column == selected_x {
+                        '@'
+                    } else {
+                        '.'
+                    }
+                })
+                .collect::<String>();
+
+            Line::from(vec![
+                Span::styled(vertical_label, Style::default().fg(GRAY)),
+                Span::styled(horizontal_start, Style::default().fg(GRAY)),
+                Span::styled(
+                    grid,
+                    if app.tone_pad_editing {
+                        Style::default().fg(YELLOW)
+                    } else {
+                        Style::default().fg(WHITE)
+                    },
+                ),
+                Span::styled(horizontal_end, Style::default().fg(GRAY)),
+            ])
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn tone_pad_x(gain: f32, width: usize) -> usize {
+    let span = MAX_TONE_GAIN_DB - MIN_TONE_GAIN_DB;
+    let normalized = ((gain - MIN_TONE_GAIN_DB) / span).clamp(0.0, 1.0);
+    (normalized * (width.saturating_sub(1) as f32)).round() as usize
+}
+
+fn tone_pad_y(gain: f32, height: usize) -> usize {
+    let span = MAX_TONE_GAIN_DB - MIN_TONE_GAIN_DB;
+    let normalized = ((gain - MIN_TONE_GAIN_DB) / span).clamp(0.0, 1.0);
+    ((1.0 - normalized) * (height.saturating_sub(1) as f32)).round() as usize
+}
+
+fn draw_setting_rows(
+    frame: &mut Frame,
+    app: &App,
+    rows: &[crate::app::SettingRow],
+    area: Rect,
+    hidden_index: Option<usize>,
+) {
     let items = rows
         .iter()
         .enumerate()
+        .filter(|(index, _)| Some(*index) != hidden_index)
         .map(|(index, row)| setting_row_item(app, row, index == app.settings_index))
         .collect::<Vec<_>>();
     let list = List::new(items);
@@ -736,7 +847,12 @@ fn draw_about_settings(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_settings_hint(frame: &mut Frame, app: &App, area: Rect) {
     let hint = match app.settings_tab {
         SettingsTab::General => "[↑↓] move    [Enter] toggle    [Tab] next tab    [Esc] close",
-        SettingsTab::Audio => "[↑↓] move    [←/→] adjust    [Tab] next tab    [Esc] close",
+        SettingsTab::Audio if app.tone_pad_editing => {
+            "[↑↓←→] move tone pad    [Enter/Esc] finish editing"
+        }
+        SettingsTab::Audio => {
+            "[↑↓] move    [←/→] adjust    [Enter] edit pad    [Tab] next tab    [Esc] close"
+        }
         SettingsTab::Devices => "[↑↓] move    [Enter] activate    [Tab] next tab    [Esc] close",
         SettingsTab::About => "[Tab] next tab    [Esc] close",
     };
@@ -850,6 +966,18 @@ fn handle_search_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 fn handle_settings_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if app.tone_pad_editing {
+        match key.code {
+            KeyCode::Up => app.adjust_tone_pad(0.0, 1.0)?,
+            KeyCode::Down => app.adjust_tone_pad(0.0, -1.0)?,
+            KeyCode::Left => app.adjust_tone_pad(-1.0, 0.0)?,
+            KeyCode::Right => app.adjust_tone_pad(1.0, 0.0)?,
+            KeyCode::Enter | KeyCode::Esc => app.tone_pad_editing = false,
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.close_settings(),
         KeyCode::Tab => app.cycle_settings_tab(true),
@@ -1185,6 +1313,49 @@ mod tests {
         )
         .expect("cycle tab");
         assert_eq!(app.settings_tab, SettingsTab::Devices);
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
+    fn tone_pad_is_keyboard_operable_and_renders_axis_labels() {
+        let (mut app, root) = test_app("tone-pad");
+        app.open_settings();
+        handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        )
+        .expect("open audio settings");
+        for _ in 0..2 {
+            handle_event(
+                &mut app,
+                Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+            )
+            .expect("select tone pad");
+        }
+        handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        )
+        .expect("start tone pad editing");
+        handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
+        )
+        .expect("raise treble gain");
+        handle_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        )
+        .expect("raise bass gain");
+
+        assert_eq!(app.config.tone_bass_gain, 1.0);
+        assert_eq!(app.config.tone_treble_gain, 1.0);
+        let text = buffer_text(&mut app);
+        assert!(text.contains("tone pad"));
+        assert!(text.contains("warm"));
+        assert!(text.contains("bright"));
+        assert!(text.contains("full"));
+        assert!(text.contains("light"));
         fs::remove_dir_all(root).expect("remove test directory");
     }
 

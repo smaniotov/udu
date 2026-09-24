@@ -1,7 +1,7 @@
 use crate::backend::BackendStatus;
 use crate::backend::control::{Request, Response, socket_path};
 use crate::backend::stats::Stats;
-use crate::config::{AppConfig, clamp_volume};
+use crate::config::{AppConfig, clamp_tone_gain, clamp_volume};
 use cpal::traits::HostTrait;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -383,6 +383,24 @@ fn pending_requests(config: &AppConfig, current: &BackendStatus) -> Vec<Request>
         });
     }
 
+    if (config.tone_bass_gain - current.tone_bass_gain).abs() > f32::EPSILON {
+        requests.push(Request {
+            cmd: String::from("set_tone_bass_gain"),
+            path: None,
+            value: Some(clamp_tone_gain(config.tone_bass_gain)),
+            name: None,
+        });
+    }
+
+    if (config.tone_treble_gain - current.tone_treble_gain).abs() > f32::EPSILON {
+        requests.push(Request {
+            cmd: String::from("set_tone_treble_gain"),
+            path: None,
+            value: Some(clamp_tone_gain(config.tone_treble_gain)),
+            name: None,
+        });
+    }
+
     if config.output_device != current.output_device {
         requests.push(Request {
             cmd: String::from("set_output_device"),
@@ -467,6 +485,12 @@ mod tests {
             crate::backend::audio::TonePad::default()
         }
 
+        fn set_tone_eq(&self, _bass_gain: f32, _treble_gain: f32) {}
+
+        fn tone_eq(&self) -> crate::backend::audio::ToneEq {
+            crate::backend::audio::ToneEq::default()
+        }
+
         fn set_variation(&self, _pitch: f32, _velocity: f32) {}
     }
 
@@ -480,6 +504,8 @@ mod tests {
             output_device: None,
             tone_pan: 0.0,
             tone_distance: 1.0,
+            tone_bass_gain: 0.0,
+            tone_treble_gain: 0.0,
             enabled: true,
             modifier_sounds: true,
             key_up_sounds: true,
@@ -646,6 +672,8 @@ mod tests {
             output_device: None,
             tone_pan: 0.0,
             tone_distance: 1.0,
+            tone_bass_gain: 0.0,
+            tone_treble_gain: 0.0,
         };
         let current = status(Some("Creams"), 2.0, Some("kbd"));
 
@@ -672,14 +700,18 @@ mod tests {
             output_device: None,
             tone_pan: 0.0,
             tone_distance: 1.0,
+            tone_bass_gain: 2.0,
+            tone_treble_gain: -3.0,
         };
         let current = status(Some("Creams"), 2.0, Some("kbd"));
 
         let requests = pending_requests(&config, &current);
 
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 5);
         assert_eq!(requests[0].cmd, "set_soundpack");
         assert_eq!(requests[1].cmd, "set_volume");
         assert_eq!(requests[2].cmd, "set_device");
+        assert_eq!(requests[3].cmd, "set_tone_bass_gain");
+        assert_eq!(requests[4].cmd, "set_tone_treble_gain");
     }
 }

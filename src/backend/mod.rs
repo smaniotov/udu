@@ -8,7 +8,7 @@ use crate::backend::audio::{Audio, AudioControl};
 use crate::backend::capture::{Capture, CaptureError, KeyEvent, KeyEventKind, KeyEventSource};
 use crate::backend::mapping::Mapping;
 use crate::backend::stats::StatsStore;
-use crate::config::{AppConfig, clamp_volume};
+use crate::config::{AppConfig, clamp_tone_gain, clamp_volume};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -51,6 +51,10 @@ pub struct BackendStatus {
     pub output_device: Option<String>,
     pub tone_pan: f32,
     pub tone_distance: f32,
+    #[serde(default)]
+    pub tone_bass_gain: f32,
+    #[serde(default)]
+    pub tone_treble_gain: f32,
     pub enabled: bool,
 }
 
@@ -87,10 +91,13 @@ pub enum EngineEvent {
 pub fn run(config_path: &Path, config: AppConfig) -> Result<(), BackendError> {
     let config = AppConfig {
         volume: clamp_volume(config.volume),
+        tone_bass_gain: clamp_tone_gain(config.tone_bass_gain),
+        tone_treble_gain: clamp_tone_gain(config.tone_treble_gain),
         ..config
     };
     let audio = Arc::new(Audio::new(config.volume)?);
     audio.set_tone(config.tone_pan, config.tone_distance);
+    audio.set_tone_eq(config.tone_bass_gain, config.tone_treble_gain);
     audio.set_variation(config.pitch_variation, config.velocity_variation);
 
     if let Some(device_name) = config.output_device.as_deref()
@@ -467,6 +474,12 @@ mod effect_tests {
             crate::backend::audio::TonePad::default()
         }
 
+        fn set_tone_eq(&self, _bass_gain: f32, _treble_gain: f32) {}
+
+        fn tone_eq(&self) -> crate::backend::audio::ToneEq {
+            crate::backend::audio::ToneEq::default()
+        }
+
         fn set_variation(&self, _pitch: f32, _velocity: f32) {}
     }
 
@@ -704,6 +717,12 @@ mod engine_tests {
 
         fn tone(&self) -> TonePad {
             TonePad::default()
+        }
+
+        fn set_tone_eq(&self, _bass_gain: f32, _treble_gain: f32) {}
+
+        fn tone_eq(&self) -> crate::backend::audio::ToneEq {
+            crate::backend::audio::ToneEq::default()
         }
 
         fn set_variation(&self, _pitch: f32, _velocity: f32) {}

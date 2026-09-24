@@ -172,6 +172,8 @@ fn apply(request: Request, backend: &BackendInner) -> Response {
         "reset_stats" => apply_reset_stats(request, backend),
         "set_tone_pan" => apply_tone(request, backend, true),
         "set_tone_distance" => apply_tone(request, backend, false),
+        "set_tone_bass_gain" => apply_tone_eq(request, backend, true),
+        "set_tone_treble_gain" => apply_tone_eq(request, backend, false),
         "status" => Response::ok(current_status(backend)),
         unknown => Response::error(format!("unknown command '{unknown}'")),
     }
@@ -403,6 +405,39 @@ fn apply_tone(request: Request, backend: &BackendInner, is_pan: bool) -> Respons
     Response::ok(current_status(backend))
 }
 
+fn apply_tone_eq(request: Request, backend: &BackendInner, is_bass: bool) -> Response {
+    let Some(value) = request.value else {
+        return Response::error("tone EQ command requires a 'value'");
+    };
+
+    let current = backend.audio.tone_eq();
+    let (bass_gain, treble_gain) = if is_bass {
+        (crate::config::clamp_tone_gain(value), current.treble_gain)
+    } else {
+        (current.bass_gain, crate::config::clamp_tone_gain(value))
+    };
+
+    let mut config = backend
+        .state
+        .config
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous_bass_gain = config.tone_bass_gain;
+    let previous_treble_gain = config.tone_treble_gain;
+    config.tone_bass_gain = bass_gain;
+    config.tone_treble_gain = treble_gain;
+    if let Err(error) = persist(backend, &config) {
+        config.tone_bass_gain = previous_bass_gain;
+        config.tone_treble_gain = previous_treble_gain;
+        return Response::error(error);
+    }
+    drop(config);
+
+    backend.audio.set_tone_eq(bass_gain, treble_gain);
+
+    Response::ok(current_status(backend))
+}
+
 fn apply_flag(request: Request, backend: &BackendInner, label: &str) -> Response {
     let Some(value) = request.value else {
         return Response::error(format!("{label} requires a 'value'"));
@@ -539,6 +574,8 @@ fn current_status(backend: &BackendInner) -> BackendStatus {
         .desired_device
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let tone = backend.audio.tone();
+    let tone_eq = backend.audio.tone_eq();
 
     BackendStatus {
         soundpack: mapping.as_ref().map(|mapping| mapping.pack_name.clone()),
@@ -547,8 +584,10 @@ fn current_status(backend: &BackendInner) -> BackendStatus {
         device_connected: backend.connected.load(std::sync::atomic::Ordering::Relaxed),
         stream_failed: backend.audio.stream_failed(),
         output_device: backend.audio.output_device(),
-        tone_pan: backend.audio.tone().pan,
-        tone_distance: backend.audio.tone().distance,
+        tone_pan: tone.pan,
+        tone_distance: tone.distance,
+        tone_bass_gain: tone_eq.bass_gain,
+        tone_treble_gain: tone_eq.treble_gain,
         enabled: backend.enabled.load(std::sync::atomic::Ordering::Relaxed),
         modifier_sounds: backend
             .modifier_sounds
@@ -624,6 +663,7 @@ mod tests {
     struct SilentAudio {
         output_device: Mutex<Option<String>>,
         tone: Mutex<crate::backend::audio::TonePad>,
+        tone_eq: Mutex<crate::backend::audio::ToneEq>,
     }
 
     impl SilentAudio {
@@ -631,6 +671,7 @@ mod tests {
             Self {
                 output_device: Mutex::new(None),
                 tone: Mutex::new(crate::backend::audio::TonePad::default()),
+                tone_eq: Mutex::new(crate::backend::audio::ToneEq::default()),
             }
         }
     }
@@ -684,6 +725,23 @@ mod tests {
         fn tone(&self) -> crate::backend::audio::TonePad {
             *self
                 .tone
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+
+        fn set_tone_eq(&self, bass_gain: f32, treble_gain: f32) {
+            *self
+                .tone_eq
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = crate::backend::audio::ToneEq {
+                bass_gain,
+                treble_gain,
+            };
+        }
+
+        fn tone_eq(&self) -> crate::backend::audio::ToneEq {
+            *self
+                .tone_eq
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
         }
@@ -837,6 +895,8 @@ mod tests {
             output_device: None,
             tone_pan: 0.0,
             tone_distance: 1.0,
+            tone_bass_gain: 0.0,
+            tone_treble_gain: 0.0,
             enabled: true,
             modifier_sounds: true,
             key_up_sounds: true,
@@ -937,9 +997,19 @@ mod tests {
         assert!(response.ok);
         assert_eq!(response.status.unwrap().tone_distance, 0.5);
 
+        let response = handle_request(backend, r#"{"cmd":"set_tone_bass_gain","value":6.0}"#);
+        assert!(response.ok);
+        assert_eq!(response.status.unwrap().tone_bass_gain, 6.0);
+
+        let response = handle_request(backend, r#"{"cmd":"set_tone_treble_gain","value":-4.0}"#);
+        assert!(response.ok);
+        assert_eq!(response.status.unwrap().tone_treble_gain, -4.0);
+
         let persisted = load_config(&config_path).expect("load persisted config");
         assert_eq!(persisted.tone_pan, 1.0);
         assert_eq!(persisted.tone_distance, 0.5);
+        assert_eq!(persisted.tone_bass_gain, 6.0);
+        assert_eq!(persisted.tone_treble_gain, -4.0);
         std::fs::remove_dir_all(config_path.parent().unwrap()).expect("cleanup");
     }
 

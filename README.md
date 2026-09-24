@@ -93,7 +93,7 @@ reachable, on purpose.
 | `p` | Preview the selected pack |
 | `x` | Mute — this **closes the keyboard device**, it does not just silence audio |
 | `s` | Usage stats, exportable as Markdown |
-| `[` `]` · `;` `'` | Tone Pad: pan the sound source, change its distance |
+| Audio settings · `Enter` on Tone pad | Enter the pad; arrows change warm ↔ bright and light ↔ full, with the center neutral |
 | `r` | Rediscover packs and devices |
 | `U` | Stop and uninstall the background service |
 | `?` | Help · `q` closes the TUI, service keeps running |

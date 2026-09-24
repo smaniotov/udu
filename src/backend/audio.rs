@@ -1,6 +1,9 @@
 use crate::config::{
-    DEFAULT_PITCH_VARIATION, DEFAULT_VELOCITY_VARIATION, MAX_VARIATION, clamp_volume,
+    DEFAULT_PITCH_VARIATION, DEFAULT_VELOCITY_VARIATION, MAX_VARIATION, clamp_tone_gain,
+    clamp_volume,
 };
+use biquad::frequency::Hertz;
+use biquad::{Biquad, Coefficients, DirectForm1, Q_BUTTERWORTH_F32, Type};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, StreamConfig};
 use std::collections::HashMap;
@@ -24,6 +27,9 @@ const NORMALIZE_TARGET_PEAK: f32 = 0.1;
 const MAX_NORMALIZE_GAIN: f32 = 16.0;
 const LIMITER_KNEE: f32 = 0.75;
 const LIMITER_CEILING: f32 = 1.0;
+const TONE_LOW_SHELF_HZ: f32 = 180.0;
+const TONE_HIGH_SHELF_HZ: f32 = 4_000.0;
+const TONE_SHELF_MAX_FREQUENCY_RATIO: f32 = 0.45;
 
 #[derive(Debug, Error)]
 pub enum AudioError {
@@ -60,6 +66,8 @@ pub trait AudioControl: Send + Sync {
     fn output_device(&self) -> Option<String>;
     fn set_tone(&self, pan: f32, distance: f32);
     fn tone(&self) -> TonePad;
+    fn set_tone_eq(&self, bass_gain: f32, treble_gain: f32);
+    fn tone_eq(&self) -> ToneEq;
     fn set_variation(&self, pitch: f32, velocity: f32);
 }
 
@@ -100,6 +108,14 @@ impl AudioControl for Audio {
         self.tone()
     }
 
+    fn set_tone_eq(&self, bass_gain: f32, treble_gain: f32) {
+        self.set_tone_eq(bass_gain, treble_gain);
+    }
+
+    fn tone_eq(&self) -> ToneEq {
+        self.tone_eq()
+    }
+
     fn set_variation(&self, pitch: f32, velocity: f32) {
         self.set_variation(pitch, velocity);
     }
@@ -111,6 +127,8 @@ pub struct Audio {
     volume: Arc<AtomicU32>,
     tone_pan: Arc<AtomicU32>,
     tone_distance: Arc<AtomicU32>,
+    tone_bass_gain: Arc<AtomicU32>,
+    tone_treble_gain: Arc<AtomicU32>,
     pitch_variation: Arc<AtomicU32>,
     velocity_variation: Arc<AtomicU32>,
     cache: Mutex<DecodeCache>,
@@ -132,6 +150,9 @@ impl Audio {
         let default_tone = TonePad::default();
         let tone_pan = Arc::new(AtomicU32::new(default_tone.pan.to_bits()));
         let tone_distance = Arc::new(AtomicU32::new(default_tone.distance.to_bits()));
+        let default_tone_eq = ToneEq::default();
+        let tone_bass_gain = Arc::new(AtomicU32::new(default_tone_eq.bass_gain.to_bits()));
+        let tone_treble_gain = Arc::new(AtomicU32::new(default_tone_eq.treble_gain.to_bits()));
         let pitch_variation = Arc::new(AtomicU32::new(DEFAULT_PITCH_VARIATION.to_bits()));
         let velocity_variation = Arc::new(AtomicU32::new(DEFAULT_VELOCITY_VARIATION.to_bits()));
 
@@ -144,6 +165,8 @@ impl Audio {
             volume: &volume,
             tone_pan: &tone_pan,
             tone_distance: &tone_distance,
+            tone_bass_gain: &tone_bass_gain,
+            tone_treble_gain: &tone_treble_gain,
             stream_failed: &stream_failed,
             underrun_count: &underrun_count,
         };
@@ -163,6 +186,8 @@ impl Audio {
             volume,
             tone_pan,
             tone_distance,
+            tone_bass_gain,
+            tone_treble_gain,
             pitch_variation,
             velocity_variation,
             cache: Mutex::new(DecodeCache::new()),
@@ -228,6 +253,20 @@ impl Audio {
         }
     }
 
+    pub fn set_tone_eq(&self, bass_gain: f32, treble_gain: f32) {
+        self.tone_bass_gain
+            .store(clamp_tone_gain(bass_gain).to_bits(), Ordering::Relaxed);
+        self.tone_treble_gain
+            .store(clamp_tone_gain(treble_gain).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn tone_eq(&self) -> ToneEq {
+        ToneEq {
+            bass_gain: f32::from_bits(self.tone_bass_gain.load(Ordering::Relaxed)),
+            treble_gain: f32::from_bits(self.tone_treble_gain.load(Ordering::Relaxed)),
+        }
+    }
+
     pub fn set_variation(&self, pitch: f32, velocity: f32) {
         self.pitch_variation
             .store(pitch.clamp(0.0, MAX_VARIATION).to_bits(), Ordering::Relaxed);
@@ -269,6 +308,8 @@ impl Audio {
 
     pub fn set_output_device(&self, name: Option<&str>) -> Result<(), AudioError> {
         let config = select_output_config_for(name)?;
+        let output_channels = config.1.channels;
+        let output_rate = config.1.sample_rate;
         let stream = build_output_stream(
             &config.0,
             config.1,
@@ -277,12 +318,27 @@ impl Audio {
                 volume: &self.volume,
                 tone_pan: &self.tone_pan,
                 tone_distance: &self.tone_distance,
+                tone_bass_gain: &self.tone_bass_gain,
+                tone_treble_gain: &self.tone_treble_gain,
                 stream_failed: &self.stream_failed,
                 underrun_count: &self.underrun_count,
             },
         )
         .map_err(AudioError::BuildStream)?;
+
+        let previous = self
+            ._stream
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        drop(previous);
+
+        self.voices
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_output_format(usize::from(output_channels), output_rate);
         stream.play().map_err(AudioError::PlayStream)?;
+
         let mut current = self
             ._stream
             .lock()
@@ -305,6 +361,8 @@ struct StreamHandles<'a> {
     volume: &'a Arc<AtomicU32>,
     tone_pan: &'a Arc<AtomicU32>,
     tone_distance: &'a Arc<AtomicU32>,
+    tone_bass_gain: &'a Arc<AtomicU32>,
+    tone_treble_gain: &'a Arc<AtomicU32>,
     stream_failed: &'a Arc<AtomicBool>,
     underrun_count: &'a Arc<AtomicU32>,
 }
@@ -318,6 +376,8 @@ fn build_output_stream(
     let volume_callback = Arc::clone(handles.volume);
     let tone_pan_callback = Arc::clone(handles.tone_pan);
     let tone_distance_callback = Arc::clone(handles.tone_distance);
+    let tone_bass_gain_callback = Arc::clone(handles.tone_bass_gain);
+    let tone_treble_gain_callback = Arc::clone(handles.tone_treble_gain);
     let stream_failed_callback = Arc::clone(handles.stream_failed);
     let underrun_count_callback = Arc::clone(handles.underrun_count);
 
@@ -330,9 +390,14 @@ fn build_output_stream(
                 pan: f32::from_bits(tone_pan_callback.load(Ordering::Relaxed)),
                 distance: f32::from_bits(tone_distance_callback.load(Ordering::Relaxed)),
             };
+            let tone_eq = ToneEq {
+                bass_gain: f32::from_bits(tone_bass_gain_callback.load(Ordering::Relaxed)),
+                treble_gain: f32::from_bits(tone_treble_gain_callback.load(Ordering::Relaxed)),
+            };
             let mut pool = voices_callback
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            pool.set_tone_eq(tone_eq);
             pool.mix_into(data, gain, tone);
             apply_ceiling(data);
         },
@@ -599,10 +664,146 @@ impl Default for TonePad {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ToneEq {
+    pub bass_gain: f32,
+    pub treble_gain: f32,
+}
+
+impl Default for ToneEq {
+    fn default() -> Self {
+        Self {
+            bass_gain: 0.0,
+            treble_gain: 0.0,
+        }
+    }
+}
+
+fn tone_filter_coefficients(
+    sample_rate: u32,
+    tone_eq: ToneEq,
+) -> (Coefficients<f32>, Coefficients<f32>) {
+    let sample_rate = sample_rate.max(1) as f32;
+    let low_frequency = TONE_LOW_SHELF_HZ.min(sample_rate * TONE_SHELF_MAX_FREQUENCY_RATIO);
+    let high_frequency = TONE_HIGH_SHELF_HZ.min(sample_rate * TONE_SHELF_MAX_FREQUENCY_RATIO);
+    let sample_rate = Hertz::from_hz(sample_rate).expect("audio sample rate must be positive");
+    let low_frequency =
+        Hertz::from_hz(low_frequency).expect("low shelf frequency must be positive");
+    let high_frequency =
+        Hertz::from_hz(high_frequency).expect("high shelf frequency must be positive");
+
+    let low_shelf = Coefficients::from_params(
+        Type::LowShelf(clamp_tone_gain(tone_eq.bass_gain)),
+        sample_rate,
+        low_frequency,
+        Q_BUTTERWORTH_F32,
+    )
+    .expect("low shelf frequency must stay below Nyquist");
+    let high_shelf = Coefficients::from_params(
+        Type::HighShelf(clamp_tone_gain(tone_eq.treble_gain)),
+        sample_rate,
+        high_frequency,
+        Q_BUTTERWORTH_F32,
+    )
+    .expect("high shelf frequency must stay below Nyquist");
+
+    (low_shelf, high_shelf)
+}
+
+struct ToneEqualizer {
+    low_shelves: Vec<DirectForm1<f32>>,
+    high_shelves: Vec<DirectForm1<f32>>,
+    sample_rate: u32,
+    gains: ToneEq,
+}
+
+impl ToneEqualizer {
+    fn new(channels: usize, sample_rate: u32) -> Self {
+        let gains = ToneEq::default();
+        let (low_coefficients, high_coefficients) = tone_filter_coefficients(sample_rate, gains);
+        let low_shelves = (0..channels)
+            .map(|_| DirectForm1::new(low_coefficients))
+            .collect();
+        let high_shelves = (0..channels)
+            .map(|_| DirectForm1::new(high_coefficients))
+            .collect();
+
+        Self {
+            low_shelves,
+            high_shelves,
+            sample_rate,
+            gains,
+        }
+    }
+
+    fn update_gains(&mut self, gains: ToneEq) {
+        let gains = ToneEq {
+            bass_gain: clamp_tone_gain(gains.bass_gain),
+            treble_gain: clamp_tone_gain(gains.treble_gain),
+        };
+        if (gains.bass_gain - self.gains.bass_gain).abs() <= f32::EPSILON
+            && (gains.treble_gain - self.gains.treble_gain).abs() <= f32::EPSILON
+        {
+            return;
+        }
+
+        let (low_coefficients, high_coefficients) =
+            tone_filter_coefficients(self.sample_rate, gains);
+        self.low_shelves
+            .iter_mut()
+            .for_each(|filter| filter.update_coefficients(low_coefficients));
+        self.high_shelves
+            .iter_mut()
+            .for_each(|filter| filter.update_coefficients(high_coefficients));
+
+        if gains.bass_gain.abs() <= f32::EPSILON {
+            self.low_shelves
+                .iter_mut()
+                .for_each(|filter| filter.reset_state());
+        }
+        if gains.treble_gain.abs() <= f32::EPSILON {
+            self.high_shelves
+                .iter_mut()
+                .for_each(|filter| filter.reset_state());
+        }
+
+        self.gains = gains;
+    }
+
+    fn process(&mut self, data: &mut [f32], channels: usize) {
+        if channels == 0
+            || (self.gains.bass_gain.abs() <= f32::EPSILON
+                && self.gains.treble_gain.abs() <= f32::EPSILON)
+        {
+            return;
+        }
+
+        for frame in data.chunks_exact_mut(channels) {
+            for (channel, sample) in frame.iter_mut().enumerate() {
+                let Some(low_shelf) = self.low_shelves.get_mut(channel) else {
+                    break;
+                };
+                let Some(high_shelf) = self.high_shelves.get_mut(channel) else {
+                    break;
+                };
+                let mut filtered = *sample;
+                if self.gains.bass_gain.abs() > f32::EPSILON {
+                    filtered = low_shelf.run(filtered);
+                }
+                if self.gains.treble_gain.abs() > f32::EPSILON {
+                    filtered = high_shelf.run(filtered);
+                }
+                *sample = filtered;
+            }
+        }
+    }
+}
+
 struct VoicePool {
     voices: Vec<Voice>,
     out_channels: usize,
     out_rate: u32,
+    tone_equalizer: ToneEqualizer,
 }
 
 impl VoicePool {
@@ -611,7 +812,18 @@ impl VoicePool {
             voices: Vec::new(),
             out_channels,
             out_rate,
+            tone_equalizer: ToneEqualizer::new(out_channels, out_rate),
         }
+    }
+
+    fn set_tone_eq(&mut self, gains: ToneEq) {
+        self.tone_equalizer.update_gains(gains);
+    }
+
+    fn set_output_format(&mut self, out_channels: usize, out_rate: u32) {
+        self.out_channels = out_channels;
+        self.out_rate = out_rate;
+        self.tone_equalizer = ToneEqualizer::new(out_channels, out_rate);
     }
 
     fn spawn(&mut self, sound: Arc<DecodedSound>, pitch: f32, velocity: f32) {
@@ -650,6 +862,8 @@ impl VoicePool {
                 );
             }
         }
+
+        self.tone_equalizer.process(output, self.out_channels);
     }
 }
 
@@ -788,7 +1002,8 @@ fn varied_playback(
 #[cfg(test)]
 mod tests {
     use super::{
-        DecodeCache, DecodedSound, MAX_VARIATION, TonePad, VoicePool, decode_file, varied_playback,
+        DecodeCache, DecodedSound, MAX_VARIATION, ToneEq, ToneEqualizer, TonePad, VoicePool,
+        decode_file, varied_playback,
     };
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -896,6 +1111,48 @@ mod tests {
 
         assert!(near_peak > far_peak, "distance must attenuate");
         assert!((far_peak - near_peak * 0.25).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tone_eq_boosts_the_selected_frequency_ranges() {
+        let mut equalizer = ToneEqualizer::new(1, 44_100);
+        equalizer.update_gains(ToneEq {
+            bass_gain: 6.0,
+            treble_gain: 0.0,
+        });
+
+        let mut samples = vec![1.0; 4_410];
+        equalizer.process(&mut samples, 1);
+
+        assert!(samples.last().is_some_and(|sample| *sample > 1.8));
+
+        let mut equalizer = ToneEqualizer::new(1, 44_100);
+        equalizer.update_gains(ToneEq {
+            bass_gain: 0.0,
+            treble_gain: 6.0,
+        });
+        let mut high_frequency = (0..4_410)
+            .map(|index| (2.0 * std::f32::consts::PI * 10_000.0 * index as f32 / 44_100.0).sin())
+            .collect::<Vec<_>>();
+        let input_rms = (high_frequency[2_000..]
+            .iter()
+            .map(|sample| sample * sample)
+            .sum::<f32>()
+            / 2_410.0)
+            .sqrt();
+        equalizer.process(&mut high_frequency, 1);
+        let output_rms = (high_frequency[2_000..]
+            .iter()
+            .map(|sample| sample * sample)
+            .sum::<f32>()
+            / 2_410.0)
+            .sqrt();
+        assert!(output_rms > input_rms * 1.5);
+
+        let mut neutral = ToneEqualizer::new(1, 44_100);
+        let mut neutral_samples = vec![1.0; 4_410];
+        neutral.process(&mut neutral_samples, 1);
+        assert!(neutral_samples.iter().all(|sample| *sample == 1.0));
     }
 
     #[test]

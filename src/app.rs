@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, MAX_VARIATION, clamp_volume};
+use crate::config::{AppConfig, MAX_VARIATION, TONE_PAD_STEP_DB, clamp_tone_gain, clamp_volume};
 use crate::control::{ControlClient, ControlError, output_devices};
 use crate::device::{KeyboardDevice, discover_keyboards};
 use crate::service::{LegacyUnitMigration, LegacyUnitOutcome, UduService};
@@ -51,6 +51,7 @@ enum SettingKind {
         format: fn(f32) -> String,
     },
     Device,
+    TonePad,
 }
 
 pub(crate) enum SettingTone {
@@ -70,6 +71,10 @@ impl SettingRow {
                 .as_deref()
                 .unwrap_or("default")
                 .to_string(),
+            SettingKind::TonePad => format!(
+                "bass {:+.1} dB / treble {:+.1} dB",
+                config.tone_bass_gain, config.tone_treble_gain
+            ),
         }
     }
 
@@ -79,6 +84,7 @@ impl SettingRow {
             SettingKind::Toggle { .. } => SettingTone::Off,
             SettingKind::Ranged { .. } => SettingTone::Plain,
             SettingKind::Device => SettingTone::Accent,
+            SettingKind::TonePad => SettingTone::Plain,
         }
     }
 }
@@ -114,7 +120,7 @@ pub(crate) const GENERAL_SETTINGS: [SettingRow; 4] = [
     },
 ];
 
-pub(crate) const AUDIO_SETTINGS: [SettingRow; 5] = [
+pub(crate) const AUDIO_SETTINGS: [SettingRow; 6] = [
     SettingRow {
         label: "Pitch variation",
         kind: SettingKind::Ranged {
@@ -134,6 +140,10 @@ pub(crate) const AUDIO_SETTINGS: [SettingRow; 5] = [
             range: (0.0, MAX_VARIATION),
             format: |value| format!("{:.0}%", value * 100.0),
         },
+    },
+    SettingRow {
+        label: "Tone pad",
+        kind: SettingKind::TonePad,
     },
     SettingRow {
         label: "Tone pan",
@@ -163,6 +173,7 @@ pub(crate) const AUDIO_SETTINGS: [SettingRow; 5] = [
 
 pub const GENERAL_SETTING_COUNT: usize = GENERAL_SETTINGS.len();
 pub const AUDIO_VALUE_COUNT: usize = AUDIO_SETTINGS.len();
+pub const TONE_PAD_SETTING_INDEX: usize = 2;
 
 fn current_setting_row(tab: SettingsTab, index: usize) -> Option<&'static SettingRow> {
     match tab {
@@ -243,6 +254,7 @@ pub struct App {
     pub service_modal: Option<ServiceModal>,
     pub settings_tab: SettingsTab,
     pub settings_index: usize,
+    pub tone_pad_editing: bool,
     pub search_query: String,
     pub searching: bool,
     pub status: String,
@@ -267,6 +279,7 @@ impl App {
             service_modal: None,
             settings_tab: SettingsTab::General,
             settings_index: 0,
+            tone_pad_editing: false,
             search_query: String::new(),
             searching: false,
             status: String::from("Loading soundpacks and devices..."),
@@ -416,10 +429,12 @@ impl App {
     pub fn open_settings(&mut self) {
         self.screen = Screen::Settings;
         self.settings_index = 0;
+        self.tone_pad_editing = false;
     }
 
     pub fn close_settings(&mut self) {
         self.screen = Screen::Launcher;
+        self.tone_pad_editing = false;
     }
 
     pub fn cycle_settings_tab(&mut self, forward: bool) {
@@ -440,6 +455,7 @@ impl App {
         };
         self.settings_tab = tabs[next];
         self.settings_index = 0;
+        self.tone_pad_editing = false;
     }
 
     pub fn activate_selected(&mut self) -> Result<()> {
@@ -563,7 +579,25 @@ impl App {
                 write(&mut self.config, next);
             }
             SettingKind::Device => self.select_output_device(1.0),
+            SettingKind::TonePad => {
+                self.tone_pad_editing = !self.tone_pad_editing;
+                self.status = if self.tone_pad_editing {
+                    String::from("Tone pad editing enabled")
+                } else {
+                    String::from("Tone pad editing finished")
+                };
+                return Ok(());
+            }
         }
+
+        self.apply_audio_config()
+    }
+
+    pub fn adjust_tone_pad(&mut self, horizontal: f32, vertical: f32) -> Result<()> {
+        self.config.tone_treble_gain =
+            clamp_tone_gain(self.config.tone_treble_gain + horizontal * TONE_PAD_STEP_DB);
+        self.config.tone_bass_gain =
+            clamp_tone_gain(self.config.tone_bass_gain + vertical * TONE_PAD_STEP_DB);
 
         self.apply_audio_config()
     }
@@ -586,7 +620,7 @@ impl App {
                 write(&mut self.config, next);
             }
             SettingKind::Device => self.select_output_device(direction),
-            SettingKind::Toggle { .. } => {
+            SettingKind::Toggle { .. } | SettingKind::TonePad => {
                 self.status = String::from("This is not an adjustable value.");
                 return Ok(());
             }
@@ -626,6 +660,8 @@ impl App {
         self.config.velocity_variation = status.velocity_variation;
         self.config.tone_pan = status.tone_pan;
         self.config.tone_distance = status.tone_distance;
+        self.config.tone_bass_gain = status.tone_bass_gain;
+        self.config.tone_treble_gain = status.tone_treble_gain;
         self.config.output_device = status.output_device.clone();
     }
 
@@ -1018,7 +1054,8 @@ fn selected_device_index(devices: &[KeyboardDevice], selected_name: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::{
-        App, BackendControl, Screen, ServiceModal, SettingsTab, is_stale, live_status_line,
+        App, BackendControl, Screen, ServiceModal, SettingsTab, TONE_PAD_SETTING_INDEX, is_stale,
+        live_status_line,
     };
     use crate::backend::BackendStatus;
     use crate::config::{AppConfig, clamp_volume};
@@ -1037,6 +1074,8 @@ mod tests {
         enabled: bool,
         tone_pan: f32,
         tone_distance: f32,
+        tone_bass_gain: f32,
+        tone_treble_gain: f32,
         commands: Vec<String>,
     }
 
@@ -1051,6 +1090,8 @@ mod tests {
                 output_device: None,
                 tone_pan: self.tone_pan,
                 tone_distance: self.tone_distance,
+                tone_bass_gain: self.tone_bass_gain,
+                tone_treble_gain: self.tone_treble_gain,
                 enabled: self.enabled,
                 modifier_sounds: true,
                 key_up_sounds: true,
@@ -1125,8 +1166,10 @@ mod tests {
             Ok(self.current())
         }
 
-        fn apply_config(&mut self, _config: &AppConfig) -> Result<BackendStatus, ControlError> {
+        fn apply_config(&mut self, config: &AppConfig) -> Result<BackendStatus, ControlError> {
             self.commands.push(String::from("apply_config"));
+            self.tone_bass_gain = config.tone_bass_gain;
+            self.tone_treble_gain = config.tone_treble_gain;
             Ok(self.current())
         }
     }
@@ -1299,6 +1342,21 @@ mod tests {
     }
 
     #[test]
+    fn tone_pad_adjustments_update_config_and_backend() {
+        let (mut app, root) = test_app("tone-pad");
+        app.backend = Some(Box::new(FakeBackend::default()));
+        app.settings_tab = SettingsTab::Audio;
+        app.settings_index = TONE_PAD_SETTING_INDEX;
+        app.tone_pad_editing = true;
+
+        app.adjust_tone_pad(2.0, -1.0).expect("adjust tone pad");
+
+        assert_eq!(app.config.tone_treble_gain, 2.0);
+        assert_eq!(app.config.tone_bass_gain, -1.0);
+        fs::remove_dir_all(root).expect("remove test directory");
+    }
+
+    #[test]
     fn opens_and_closes_settings() {
         let (mut app, root) = test_app("settings");
 
@@ -1353,6 +1411,8 @@ mod tests {
                     output_device: None,
                     tone_pan: 0.0,
                     tone_distance: 0.0,
+                    tone_bass_gain: 0.0,
+                    tone_treble_gain: 0.0,
                     enabled: true,
                     modifier_sounds: true,
                     key_up_sounds: true,
@@ -1510,6 +1570,8 @@ mod tests {
             output_device: None,
             tone_pan: 0.0,
             tone_distance: 1.0,
+            tone_bass_gain: 0.0,
+            tone_treble_gain: 0.0,
             enabled: true,
             modifier_sounds: true,
             key_up_sounds: true,

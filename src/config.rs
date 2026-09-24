@@ -7,6 +7,9 @@ use thiserror::Error;
 
 pub const MIN_VOLUME: f32 = 0.0;
 pub const MAX_VOLUME: f32 = 100.0;
+pub const MIN_TONE_GAIN_DB: f32 = -12.0;
+pub const MAX_TONE_GAIN_DB: f32 = 12.0;
+pub const TONE_PAD_STEP_DB: f32 = 1.0;
 pub const VOLUME_SOFT: f32 = 30.0;
 pub const VOLUME_BALANCED: f32 = 60.0;
 pub const VOLUME_LOUD: f32 = 90.0;
@@ -16,6 +19,14 @@ pub const CURRENT_VOLUME_SCALE_VERSION: u32 = 1;
 
 pub fn clamp_volume(volume: f32) -> f32 {
     volume.clamp(MIN_VOLUME, MAX_VOLUME)
+}
+
+pub fn clamp_tone_gain(gain: f32) -> f32 {
+    if gain.is_finite() {
+        gain.clamp(MIN_TONE_GAIN_DB, MAX_TONE_GAIN_DB)
+    } else {
+        0.0
+    }
 }
 
 pub fn migrate_volume_scale(config_path: &Path) -> Result<(), ConfigError> {
@@ -86,6 +97,10 @@ pub struct AppConfig {
     pub tone_pan: f32,
     #[serde(default)]
     pub tone_distance: f32,
+    #[serde(default)]
+    pub tone_bass_gain: f32,
+    #[serde(default)]
+    pub tone_treble_gain: f32,
 }
 
 impl Default for AppConfig {
@@ -105,6 +120,8 @@ impl Default for AppConfig {
             output_device: None,
             tone_pan: 0.0,
             tone_distance: 0.0,
+            tone_bass_gain: 0.0,
+            tone_treble_gain: 0.0,
         }
     }
 }
@@ -147,9 +164,17 @@ pub fn load_config(path: &Path) -> Result<AppConfig, ConfigError> {
         source,
     })?;
 
-    serde_json::from_str(&contents).map_err(|source| ConfigError::Parse {
-        path: path.to_path_buf(),
-        source,
+    let config: AppConfig =
+        serde_json::from_str(&contents).map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+    Ok(AppConfig {
+        volume: clamp_volume(config.volume),
+        tone_bass_gain: clamp_tone_gain(config.tone_bass_gain),
+        tone_treble_gain: clamp_tone_gain(config.tone_treble_gain),
+        ..config
     })
 }
 
@@ -499,8 +524,8 @@ mod migration_tests {
 mod tests {
     use super::{
         AppConfig, CURRENT_VOLUME_SCALE_VERSION, DEFAULT_PITCH_VARIATION,
-        DEFAULT_VELOCITY_VARIATION, clamp_volume, default_soundpack_root, load_config,
-        migrate_volume_scale, prepare_config, save_config,
+        DEFAULT_VELOCITY_VARIATION, clamp_tone_gain, clamp_volume, default_soundpack_root,
+        load_config, migrate_volume_scale, prepare_config, save_config,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -516,6 +541,17 @@ mod tests {
         assert_eq!(clamp_volume(-1.0), MIN_VOLUME);
         assert_eq!(clamp_volume(200.0), MAX_VOLUME);
         assert_eq!(clamp_volume(50.0), 50.0);
+    }
+
+    #[test]
+    fn clamp_tone_gain_bounds_finite_values_and_rejects_non_finite_values() {
+        use super::{MAX_TONE_GAIN_DB, MIN_TONE_GAIN_DB};
+
+        assert_eq!(clamp_tone_gain(-20.0), MIN_TONE_GAIN_DB);
+        assert_eq!(clamp_tone_gain(20.0), MAX_TONE_GAIN_DB);
+        assert_eq!(clamp_tone_gain(4.0), 4.0);
+        assert_eq!(clamp_tone_gain(f32::NAN), 0.0);
+        assert_eq!(clamp_tone_gain(f32::INFINITY), 0.0);
     }
 
     #[test]
@@ -597,6 +633,22 @@ mod tests {
     }
 
     #[test]
+    fn loading_config_clamps_saved_tone_gains() {
+        let path = test_config_path("tone-gain-clamp");
+        fs::write(
+            &path,
+            r#"{"soundpack_roots":["/sounds"],"volume":1.0,"tone_bass_gain":20.0,"tone_treble_gain":-20.0}"#,
+        )
+        .expect("write config");
+
+        let config = load_config(&path).expect("load config");
+
+        assert_eq!(config.tone_bass_gain, super::MAX_TONE_GAIN_DB);
+        assert_eq!(config.tone_treble_gain, super::MIN_TONE_GAIN_DB);
+        fs::remove_file(path).expect("remove test config");
+    }
+
+    #[test]
     fn saves_and_loads_selected_pack_and_volume() {
         let path = test_config_path("round-trip");
         let config = AppConfig {
@@ -614,6 +666,8 @@ mod tests {
             output_device: None,
             tone_pan: 0.0,
             tone_distance: 0.0,
+            tone_bass_gain: 0.0,
+            tone_treble_gain: 0.0,
         };
 
         save_config(&path, &config).expect("save config");
